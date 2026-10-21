@@ -40,7 +40,7 @@ const definitions = [
     },
 ];
 
-const supportedByMcp = new Set(['chrome', 'firefox', 'edge', 'edge_ie_mode', 'safari']);
+const supportedByMcp = new Set(['chrome', 'firefox', 'edge', 'ie', 'edge_ie_mode', 'safari']);
 
 function getSearchDirs() {
     const pathDirs = (process.env.PATH ?? '')
@@ -192,7 +192,7 @@ export function discoverBrowserDrivers() {
         const platformSupported = !['ie', 'edge_ie_mode'].includes(browser)
             || process.platform === 'win32';
         const mcpSupported = supportedByMcp.has(browser);
-        const driverRequired = browser === 'edge_ie_mode';
+        const driverRequired = ['ie', 'edge_ie_mode'].includes(browser);
         const available = mcpSupported && platformSupported && browserFound
             && (!driverRequired || driverFound);
         const notes = [];
@@ -208,6 +208,9 @@ export function discoverBrowserDrivers() {
         }
         if (browser === 'edge_ie_mode' && browserFound && !driverFound && process.platform === 'win32') {
             notes.push('Edge IE mode requires IEDriverServer.exe 4.0.0.0 or newer on PATH.');
+        }
+        if (browser === 'ie' && browserFound && process.platform === 'win32') {
+            notes.push('Standalone IE launch is best-effort; Selenium ended official support in June 2022. IEDriverServer.exe 4.0.0.0 or newer must be on PATH.');
         }
 
         return {

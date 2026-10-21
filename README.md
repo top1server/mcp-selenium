@@ -60,9 +60,9 @@ The agent will call Selenium's APIs to `start_browser`, `navigate`, and `take_sc
 
 ## Supported Browsers
 
-Chrome, Firefox, Edge, Edge IE mode (Windows), and Safari.
+Chrome, Firefox, Edge, Internet Explorer (Windows, best-effort), Edge IE mode (Windows), and Safari.
 
-Edge IE mode is launched through Selenium's Internet Explorer Driver and requires Microsoft Edge plus IEDriverServer 4.0.0.0 or newer. Put `IEDriverServer.exe` on `PATH`. Standalone Internet Explorer is reported by browser discovery for inventory only and cannot be launched.
+Internet Explorer and Edge IE mode use Selenium's Internet Explorer Driver and require IEDriverServer 4.0.0.0 or newer on `PATH`. Edge IE mode also requires Microsoft Edge. Selenium ended official support for standalone IE in June 2022, so this MCP exposes it as best-effort compatibility only. The IE driver also requires matching Protected Mode settings for all security zones and 100% browser zoom; see Selenium's [IE driver requirements](https://www.selenium.dev/documentation/ie_driver_server/).
 
 > **Safari note:** Requires macOS. Run `sudo safaridriver --enable` once and enable
 > "Allow Remote Automation" in Safari → Settings → Developer. No headless mode.
@@ -73,7 +73,7 @@ Edge IE mode is launched through Selenium's Internet Explorer Driver and require
 <summary><strong>Tools</strong></summary>
 
 ### list_browser_drivers
-Lists browser and driver executables found on the machine running the MCP server, including drivers in Selenium Manager's cache (`~/.cache/selenium` by default, or `SE_CACHE_PATH` when set). It does not inspect remote Selenium Grid nodes. `available` means the browser is installed locally and supported by this MCP server; Chrome, Firefox, and Edge may still work without a local driver because Selenium Manager can resolve one at startup. Edge IE mode is available only on Windows when both Edge and IEDriverServer are detected. Standalone IE is reported for inventory only and is not launchable.
+Lists browser and driver executables found on the machine running the MCP server, including drivers in Selenium Manager's cache (`~/.cache/selenium` by default, or `SE_CACHE_PATH` when set). It does not inspect remote Selenium Grid nodes. `available` means the browser is installed locally and supported by this MCP server; Chrome, Firefox, and Edge may still work without a local driver because Selenium Manager can resolve one at startup. IE and Edge IE mode are available only on Windows when the required browser and IEDriverServer are detected.
 
 No parameters.
 
@@ -90,14 +90,14 @@ Launches a local browser session or requests a remote session from Selenium Grid
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| browser | string | Yes | `chrome`, `firefox`, `edge`, `edge_ie_mode`, or `safari` |
+| browser | string | Yes | `chrome`, `firefox`, `edge`, `ie`, `edge_ie_mode`, or `safari` |
 | options | object | No | `{ headless: boolean, arguments: string[] }` |
 | grid_url | string | No | Selenium Grid base URL; defaults to `SELENIUM_GRID_URL`. |
 | browser_version | string | No | Requested `browserVersion` for Grid node matching. |
 | platform_name | string | No | Requested `platformName` for Grid node matching. |
 | capabilities | object | No | Additional WebDriver capabilities, including vendor capabilities such as `se:name`. `browserName`, `browserVersion`, `platformName`, and `webSocketUrl` are controlled by this tool. |
 
-For `browser: "edge_ie_mode"`, run the MCP server on Windows, install Microsoft Edge and IEDriverServer 4.0.0.0 or newer, and put `IEDriverServer.exe` on `PATH`. IE mode does not support headless mode, custom browser arguments, or WebDriver BiDi diagnostics. When using Grid, configure the Windows node with Edge IE mode and IEDriver; `list_browser_drivers` only inventories the MCP host and does not inspect Grid nodes.
+For `browser: "ie"` or `browser: "edge_ie_mode"`, run the MCP server on Windows and put IEDriverServer 4.0.0.0 or newer on `PATH`. Edge IE mode also requires Edge. Neither mode supports headless mode, custom browser arguments, or WebDriver BiDi diagnostics. When using Grid, configure the Windows node with the requested IE browser mode and IEDriver; `list_browser_drivers` only inventories the MCP host and does not inspect Grid nodes. Standalone IE is best-effort because Selenium ended its official support in June 2022.
 
 Example Grid configuration:
 
