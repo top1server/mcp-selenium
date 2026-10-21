@@ -70,13 +70,38 @@ Chrome, Firefox, Edge, and Safari.
 <details>
 <summary><strong>Tools</strong></summary>
 
+### list_browser_drivers
+Lists browser and driver executables found on the machine running the MCP server, including drivers in Selenium Manager's cache (`~/.cache/selenium` by default, or `SE_CACHE_PATH` when set). It does not inspect remote Selenium Grid nodes. `available` means the browser is installed locally and supported by this MCP server; Chrome, Firefox, and Edge may still work without a local driver because Selenium Manager can resolve one at startup. IE and Edge IE mode are reported for inventory only and are not launchable by this server.
+
+No parameters.
+
+### check_grid_status
+Checks whether a Selenium Grid is reachable and ready. It reports Grid version, node details, slot counts, active sessions, available session capacity, and queue size when those details are exposed by the Grid. The `/graphql` endpoint is queried for richer details when available; `/status` remains the readiness source.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| grid_url | string | No | Grid base URL. Defaults to `SELENIUM_GRID_URL`. Accepts a root URL such as `http://127.0.0.1:4444`, a reverse-proxy base path, `/wd/hub`, or a pasted `/status` URL. |
+| timeout_ms | number | No | Timeout per status request in milliseconds (default: 5000; range: 1000–30000). |
+
 ### start_browser
-Launches a browser session.
+Launches a local browser session or requests a remote session from Selenium Grid. Set `SELENIUM_GRID_URL` to use Grid by default, or pass `grid_url` on a call. If the argument and environment variable are both absent, the browser starts locally.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | browser | string | Yes | `chrome`, `firefox`, `edge`, or `safari` |
 | options | object | No | `{ headless: boolean, arguments: string[] }` |
+| grid_url | string | No | Selenium Grid base URL; defaults to `SELENIUM_GRID_URL`. |
+| browser_version | string | No | Requested `browserVersion` for Grid node matching. |
+| platform_name | string | No | Requested `platformName` for Grid node matching. |
+| capabilities | object | No | Additional WebDriver capabilities, including vendor capabilities such as `se:name`. `browserName`, `browserVersion`, `platformName`, and `webSocketUrl` are controlled by this tool. |
+
+Example Grid configuration:
+
+```sh
+export SELENIUM_GRID_URL=http://127.0.0.1:4444
+```
+
+Then call `check_grid_status` or `start_browser` with `browser: "chrome"`. Grid sessions run on a Grid node; screenshots and browser commands continue to go through the returned MCP session.
 
 ### navigate
 Navigates to a URL.
@@ -149,7 +174,15 @@ Captures a screenshot of the current page.
 | outputPath | string | No | Save path. If omitted, returns base64 image data. |
 
 ### close_session
-Closes the current browser session. No parameters.
+Closes the current browser session. If another session remains, it becomes active. No parameters.
+
+### session
+Lists browser sessions, switches the active session, or closes a specific session. Browser tools operate on the active session. For remote sessions, the list includes the Grid URL and the WebDriver session ID assigned by Grid.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| action | string | Yes | `list`, `switch`, or `close` |
+| session_id | string | No | Required for `switch` and `close`; ignored for `list` |
 
 ### execute_script
 Executes JavaScript in the browser. Use for advanced interactions not covered by other tools (e.g., drag and drop, scrolling, reading computed styles, DOM manipulation).

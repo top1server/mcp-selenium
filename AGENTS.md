@@ -5,7 +5,8 @@ MCP server for Selenium WebDriver browser automation. JavaScript (ES Modules), N
 ## File Map
 
 ```text
-src/lib/server.js                ← ALL server logic: tool definitions, state, helpers, cleanup
+src/lib/server.js                ← Tool definitions, shared state, common helpers, cleanup
+src/lib/grid/                    ← Selenium Grid URL, status, and capability helpers
 src/lib/accessibility-snapshot.js ← Browser-side JS injected via executeScript to build accessibility tree
 bin/mcp-selenium.js              ← CLI entry point, spawns server.js as child process
 test/mcp-client.mjs              ← Reusable MCP test client (JSON-RPC over stdio)
@@ -15,7 +16,7 @@ test/fixtures/*.html             ← HTML files loaded via file:// URLs in tests
 
 ## Architecture
 
-Server logic lives in `server.js`, with browser-injected scripts in separate files. 18 tools, 2 resources.
+Tool registration and shared state live in `server.js`; specialized Grid helpers live in `src/lib/grid/`. 21 tools, 2 resources.
 
 State is a module-level object:
 ```js

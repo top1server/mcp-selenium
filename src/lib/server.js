@@ -11,6 +11,9 @@ import { Options as ChromeOptions } from 'selenium-webdriver/chrome.js';
 import { Options as FirefoxOptions } from 'selenium-webdriver/firefox.js';
 import { Options as EdgeOptions } from 'selenium-webdriver/edge.js';
 import { Options as SafariOptions } from 'selenium-webdriver/safari.js';
+import { discoverBrowserDrivers } from './browser-discovery.js';
+import { displayGridUrl, resolveGridUrl } from './grid/url.js';
+import { inspectGrid } from './grid/status.js';
 
 // Create an MCP server
 import { createRequire } from 'module';
@@ -38,6 +41,7 @@ try {
 const state = {
     drivers: new Map(),
     currentSession: null,
+    sessionInfo: new Map(),
     bidi: new Map()
 };
 
@@ -49,6 +53,29 @@ const getDriver = () => {
     }
     return driver;
 };
+
+function activateMostRecentSession() {
+    const sessionIds = [...state.drivers.keys()];
+    state.currentSession = sessionIds.length > 0 ? sessionIds[sessionIds.length - 1] : null;
+}
+
+async function closeDriverSession(sessionId) {
+    const driver = state.drivers.get(sessionId);
+    if (!driver) {
+        throw new Error(`Unknown browser session: ${sessionId}`);
+    }
+
+    try {
+        await driver.quit();
+    } finally {
+        state.drivers.delete(sessionId);
+        state.sessionInfo.delete(sessionId);
+        state.bidi.delete(sessionId);
+        if (state.currentSession === sessionId) {
+            activateMostRecentSession();
+        }
+    }
+}
 
 const getLocator = (by, value) => {
     switch (by.toLowerCase()) {
@@ -123,6 +150,8 @@ const browserOptionsSchema = z.object({
     headless: z.boolean().optional().describe("Run browser in headless mode"),
     arguments: z.array(z.string()).optional().describe("Additional browser arguments")
 }).optional();
+const browserCapabilitiesSchema = z.record(z.string(), z.unknown()).optional()
+    .describe("Additional WebDriver capabilities for browser or Selenium Grid node selection");
 
 const locatorSchema = {
     by: z.enum(["id", "css", "xpath", "name", "tag", "class"]).describe("Locator strategy to find element"),
@@ -132,19 +161,77 @@ const locatorSchema = {
 
 // Browser Management Tools
 server.registerTool(
+    "list_browser_drivers",
+    {
+        description: "Lists browser and driver executables found on the machine running this MCP server. It does not inspect remote Selenium Grid nodes.",
+        inputSchema: {}
+    },
+    async () => {
+        try {
+            const result = {
+                platform: process.platform,
+                browsers: discoverBrowserDrivers(),
+            };
+            return {
+                content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+            };
+        } catch (e) {
+            return {
+                content: [{ type: 'text', text: `Error listing browser drivers: ${e.message}` }],
+                isError: true
+            };
+        }
+    }
+);
+
+server.registerTool(
+    "check_grid_status",
+    {
+        description: "Checks Selenium Grid readiness and reports node, slot, session, capacity, and queue details. Uses grid_url or SELENIUM_GRID_URL. Grid GraphQL details are included when available.",
+        inputSchema: {
+            grid_url: z.string().optional().describe("Selenium Grid base URL, such as http://127.0.0.1:4444; defaults to SELENIUM_GRID_URL"),
+            timeout_ms: z.number().int().min(1000).max(30000).optional().describe("Timeout for each Grid status request in milliseconds (default 5000)")
+        }
+    },
+    async ({ grid_url, timeout_ms }) => {
+        try {
+            const result = await inspectGrid(grid_url, { timeoutMs: timeout_ms ?? 5000 });
+            return {
+                content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+            };
+        } catch (e) {
+            return {
+                content: [{ type: 'text', text: `Error checking Selenium Grid: ${e.message}` }],
+                isError: true
+            };
+        }
+    }
+);
+
+server.registerTool(
     "start_browser",
     {
         description: "launches browser",
         inputSchema: {
             browser: z.enum(["chrome", "firefox", "edge", "safari"]).describe("Browser to launch (chrome, firefox, edge, or safari)"),
-            options: browserOptionsSchema
+            options: browserOptionsSchema,
+            grid_url: z.string().optional().describe("Selenium Grid URL for remote execution; defaults to SELENIUM_GRID_URL. Omit to start a local browser."),
+            browser_version: z.string().optional().describe("Requested browserVersion capability for Selenium Grid node matching"),
+            platform_name: z.string().optional().describe("Requested platformName capability for Selenium Grid node matching"),
+            capabilities: browserCapabilitiesSchema
         }
     },
-    async ({ browser, options = {} }) => {
+    async ({ browser, options = {}, grid_url, browser_version, platform_name, capabilities = {} }) => {
+        let remoteGridUrl = null;
         try {
             let builder = new Builder();
             let driver;
             let warnings = [];
+            remoteGridUrl = resolveGridUrl(grid_url, { required: false });
+
+            if (remoteGridUrl) {
+                builder = builder.usingServer(remoteGridUrl);
+            }
 
             // Enable BiDi websocket if the modules are available
             if (LogInspector && Network) {
@@ -153,9 +240,22 @@ server.registerTool(
                 builder = builder.withCapabilities({ 'webSocketUrl': true, 'unhandledPromptBehavior': 'ignore' });
             }
 
+            const applyRequestedCapabilities = (browserOptions) => {
+                if (browser_version) browserOptions.setBrowserVersion(browser_version);
+                if (platform_name) browserOptions.setCapability('platformName', platform_name);
+                const protectedCapabilities = new Set(['browserName', 'browserVersion', 'platformName', 'webSocketUrl']);
+                for (const [name, value] of Object.entries(capabilities)) {
+                    if (protectedCapabilities.has(name)) {
+                        throw new Error(`Capability ${name} is controlled by start_browser parameters`);
+                    }
+                    browserOptions.setCapability(name, value);
+                }
+                return browserOptions;
+            };
+
             switch (browser) {
                 case 'chrome': {
-                    const chromeOptions = new ChromeOptions();
+                    const chromeOptions = applyRequestedCapabilities(new ChromeOptions());
                     if (options.headless) {
                         chromeOptions.addArguments('--headless=new');
                     }
@@ -169,7 +269,7 @@ server.registerTool(
                     break;
                 }
                 case 'edge': {
-                    const edgeOptions = new EdgeOptions();
+                    const edgeOptions = applyRequestedCapabilities(new EdgeOptions());
                     if (options.headless) {
                         edgeOptions.addArguments('--headless=new');
                     }
@@ -183,7 +283,7 @@ server.registerTool(
                     break;
                 }
                 case 'firefox': {
-                    const firefoxOptions = new FirefoxOptions();
+                    const firefoxOptions = applyRequestedCapabilities(new FirefoxOptions());
                     if (options.headless) {
                         firefoxOptions.addArguments('--headless');
                     }
@@ -197,7 +297,7 @@ server.registerTool(
                     break;
                 }
                 case 'safari': {
-                    const safariOptions = new SafariOptions();
+                    const safariOptions = applyRequestedCapabilities(new SafariOptions());
                     if (options.headless) {
                         warnings.push('Safari does not support headless mode — launching with visible window.');
                     }
@@ -215,7 +315,30 @@ server.registerTool(
                 }
             }
             const sessionId = `${browser}_${Date.now()}`;
+            let webdriverSessionId = null;
+            let actualBrowserVersion = browser_version ?? null;
+            let actualPlatformName = platform_name ?? null;
+            if (remoteGridUrl) {
+                try {
+                    const webdriverSession = await driver.getSession();
+                    webdriverSessionId = String(webdriverSession.getId());
+                    const negotiatedCapabilities = webdriverSession.getCapabilities();
+                    actualBrowserVersion = negotiatedCapabilities.getBrowserVersion() ?? actualBrowserVersion;
+                    actualPlatformName = negotiatedCapabilities.getPlatform() ?? actualPlatformName;
+                } catch (_) {
+                    // Retain the live driver even if the remote session ID cannot be queried.
+                }
+            }
             state.drivers.set(sessionId, driver);
+            state.sessionInfo.set(sessionId, {
+                browser,
+                createdAt: new Date().toISOString(),
+                connection: remoteGridUrl ? 'grid' : 'local',
+                gridUrl: remoteGridUrl,
+                webdriverSessionId,
+                browserVersion: actualBrowserVersion,
+                platformName: actualPlatformName
+            });
             state.currentSession = sessionId;
 
             // Attempt to enable BiDi for real-time log capture
@@ -228,6 +351,12 @@ server.registerTool(
             }
 
             let message = `Browser started with session_id: ${sessionId}`;
+            if (remoteGridUrl) {
+                message += `\nConnection: Selenium Grid (${displayGridUrl(remoteGridUrl)})`;
+                if (webdriverSessionId) message += `\nWebDriver session ID: ${webdriverSessionId}`;
+                if (actualBrowserVersion) message += `\nBrowser version: ${actualBrowserVersion}`;
+                if (actualPlatformName) message += `\nPlatform: ${actualPlatformName}`;
+            }
             if (state.bidi.get(sessionId)?.available) {
                 message += ' (BiDi enabled: console logs, JS errors, and network activity are being captured)';
             }
@@ -240,7 +369,12 @@ server.registerTool(
             };
         } catch (e) {
             return {
-                content: [{ type: 'text', text: `Error starting browser: ${e.message}` }],
+                content: [{
+                    type: 'text',
+                    text: remoteGridUrl
+                        ? `Error starting remote browser through Selenium Grid at ${displayGridUrl(remoteGridUrl)}: ${e.message}`
+                        : `Error starting browser: ${e.message}`
+                }],
                 isError: true
             };
         }
@@ -475,21 +609,84 @@ server.registerTool(
     },
     async () => {
         try {
-            const driver = getDriver();
             const sessionId = state.currentSession;
-            try {
-                await driver.quit();
-            } finally {
-                state.drivers.delete(sessionId);
-                state.bidi.delete(sessionId);
-                state.currentSession = null;
-            }
+            if (!sessionId) throw new Error('No active browser session');
+            await closeDriverSession(sessionId);
             return {
-                content: [{ type: 'text', text: `Browser session ${sessionId} closed` }]
+                content: [{
+                    type: 'text',
+                    text: `Browser session ${sessionId} closed${state.currentSession ? `. Active session: ${state.currentSession}` : ''}`
+                }]
             };
         } catch (e) {
             return {
                 content: [{ type: 'text', text: `Error closing session: ${e.message}` }],
+                isError: true
+            };
+        }
+    }
+);
+
+server.registerTool(
+    "session",
+    {
+        description: "Lists browser sessions, switches the active session, or closes a specific session by session_id.",
+        inputSchema: {
+            action: z.enum(["list", "switch", "close"]).describe("Session action to perform"),
+            session_id: z.string().optional().describe("Session ID; required for switch and close")
+        }
+    },
+    async ({ action, session_id }) => {
+        try {
+            switch (action) {
+                case 'list': {
+                    const sessions = [...state.drivers.keys()].map((id) => ({
+                        session_id: id,
+                        browser: state.sessionInfo.get(id)?.browser ?? null,
+                        created_at: state.sessionInfo.get(id)?.createdAt ?? null,
+                        connection: state.sessionInfo.get(id)?.connection ?? 'local',
+                        grid_url: state.sessionInfo.get(id)?.gridUrl ?? null,
+                        webdriver_session_id: state.sessionInfo.get(id)?.webdriverSessionId ?? null,
+                        browser_version: state.sessionInfo.get(id)?.browserVersion ?? null,
+                        platform_name: state.sessionInfo.get(id)?.platformName ?? null,
+                        active: id === state.currentSession,
+                    }));
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                current_session_id: state.currentSession,
+                                sessions,
+                            }, null, 2)
+                        }]
+                    };
+                }
+                case 'switch': {
+                    if (!session_id) throw new Error('session_id is required for switch action');
+                    if (!state.drivers.has(session_id)) {
+                        throw new Error(`Unknown browser session: ${session_id}`);
+                    }
+                    state.currentSession = session_id;
+                    return {
+                        content: [{ type: 'text', text: `Active browser session: ${session_id}` }]
+                    };
+                }
+                case 'close': {
+                    if (!session_id) throw new Error('session_id is required for close action');
+                    await closeDriverSession(session_id);
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: `Browser session ${session_id} closed${state.currentSession ? `. Active session: ${state.currentSession}` : ''}`
+                        }]
+                    };
+                }
+                default:
+                    throw new Error(`Unsupported session action: ${action}`);
+            }
+        } catch (e) {
+            return {
+                content: [{ type: 'text', text: `Error managing session: ${e.message}` }],
                 isError: true
             };
         }
@@ -592,11 +789,15 @@ server.registerTool(
                         return { content: [{ type: 'text', text: `Window closed. Switched to: ${handles[0]}` }] };
                     }
                     const sessionId = state.currentSession;
-                    try { await driver.quit(); } catch (_) { /* ignore */ }
-                    state.drivers.delete(sessionId);
-                    state.bidi.delete(sessionId);
-                    state.currentSession = null;
-                    return { content: [{ type: 'text', text: 'Last window closed. Session ended.' }] };
+                    try {
+                        await closeDriverSession(sessionId);
+                    } catch (_) { /* the window may already have ended the session */ }
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: `Last window closed. Session ${sessionId} ended.${state.currentSession ? ` Active session: ${state.currentSession}` : ''}`
+                        }]
+                    };
                 }
                 default:
                     return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true };
@@ -899,6 +1100,7 @@ async function cleanup() {
         }
     }
     state.drivers.clear();
+    state.sessionInfo.clear();
     state.bidi.clear();
     state.currentSession = null;
     process.exit(0);

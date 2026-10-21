@@ -16,7 +16,13 @@ describe('Browser Management', () => {
   });
 
   after(async () => {
-    try { await client.callTool('close_session'); } catch { /* ignore */ }
+    try {
+      const result = await client.callTool('session', { action: 'list' });
+      const { sessions = [] } = JSON.parse(getResponseText(result));
+      for (const session of sessions) {
+        await client.callTool('session', { action: 'close', session_id: session.session_id });
+      }
+    } catch { /* ignore cleanup errors */ }
     await client.stop();
   });
 
@@ -83,7 +89,7 @@ describe('Browser Management', () => {
   });
 
   describe('multi-session', () => {
-    it('should start a second session (replaces current)', async () => {
+    it('should list, switch, and close sessions by ID', async () => {
       // Start first session
       const first = await client.callTool('start_browser', {
         browser: 'chrome',
@@ -109,19 +115,44 @@ describe('Browser Management', () => {
       // Navigate in second session to a different page
       await client.callTool('navigate', { url: fixture('interactions.html') });
 
-      // Close second session
-      const closeResult = await client.callTool('close_session');
-      const closeText = getResponseText(closeResult);
-      assert.ok(closeText.includes(secondId), `Expected second session ID in close message, got: ${closeText}`);
-
-      // First session's driver is still in the map but not current —
-      // tools should error since currentSession is now null
-      const result = await client.callTool('navigate', { url: fixture('locators.html') });
-      const text = getResponseText(result);
-      assert.ok(
-        text.includes('Error') || text.includes('No active'),
-        `Expected no active session error after closing, got: ${text}`
+      const listResult = await client.callTool('session', { action: 'list' });
+      const listed = JSON.parse(getResponseText(listResult));
+      assert.equal(listed.current_session_id, secondId);
+      assert.deepEqual(
+        listed.sessions.map((session) => session.session_id),
+        [firstId, secondId]
       );
+      assert.equal(listed.sessions.find((session) => session.session_id === firstId).active, false);
+      assert.equal(listed.sessions.find((session) => session.session_id === secondId).active, true);
+
+      // Switch to the first session and verify that its page state was preserved.
+      const switchFirst = await client.callTool('session', { action: 'switch', session_id: firstId });
+      assert.ok(getResponseText(switchFirst).includes(firstId));
+      const firstPageText = await client.callTool('get_element_text', { by: 'id', value: 'title' });
+      assert.equal(getResponseText(firstPageText), 'Heading One');
+
+      // Switch back to the second session and verify its page state.
+      await client.callTool('session', { action: 'switch', session_id: secondId });
+      const secondPageText = await client.callTool('get_element_text', { by: 'id', value: 'text-content' });
+      assert.equal(getResponseText(secondPageText), 'This is some text content');
+
+      // Closing the active session should select the most recently opened remaining session.
+      const closeSecond = await client.callTool('session', { action: 'close', session_id: secondId });
+      assert.ok(getResponseText(closeSecond).includes(firstId));
+      const afterClose = JSON.parse(getResponseText(
+        await client.callTool('session', { action: 'list' })
+      ));
+      assert.equal(afterClose.current_session_id, firstId);
+      assert.deepEqual(afterClose.sessions.map((session) => session.session_id), [firstId]);
+
+      // The old close_session tool continues to close the active session.
+      const closeFirst = await client.callTool('close_session');
+      assert.ok(getResponseText(closeFirst).includes(firstId));
+      const emptyList = JSON.parse(getResponseText(
+        await client.callTool('session', { action: 'list' })
+      ));
+      assert.equal(emptyList.current_session_id, null);
+      assert.deepEqual(emptyList.sessions, []);
     });
   });
 });
