@@ -40,7 +40,7 @@ const definitions = [
     },
 ];
 
-const supportedByMcp = new Set(['chrome', 'firefox', 'edge', 'safari']);
+const supportedByMcp = new Set(['chrome', 'firefox', 'edge', 'edge_ie_mode', 'safari']);
 
 function getSearchDirs() {
     const pathDirs = (process.env.PATH ?? '')
@@ -192,7 +192,9 @@ export function discoverBrowserDrivers() {
         const platformSupported = !['ie', 'edge_ie_mode'].includes(browser)
             || process.platform === 'win32';
         const mcpSupported = supportedByMcp.has(browser);
-        const available = mcpSupported && platformSupported && browserFound;
+        const driverRequired = browser === 'edge_ie_mode';
+        const available = mcpSupported && platformSupported && browserFound
+            && (!driverRequired || driverFound);
         const notes = [];
 
         if (!mcpSupported) {
@@ -201,8 +203,11 @@ export function discoverBrowserDrivers() {
         if (!platformSupported) {
             notes.push(`Requires Windows; MCP host is ${process.platform}.`);
         }
-        if (available && !driverFound && browser !== 'safari') {
+        if (available && !driverFound && browser !== 'safari' && browser !== 'edge_ie_mode') {
             notes.push('No driver found in PATH, common install directories, or Selenium Manager cache; Selenium Manager may resolve one at startup.');
+        }
+        if (browser === 'edge_ie_mode' && browserFound && !driverFound && process.platform === 'win32') {
+            notes.push('Edge IE mode requires IEDriverServer.exe 4.0.0.0 or newer on PATH.');
         }
 
         return {

@@ -10,6 +10,7 @@ const { Builder, By, Key, until, Actions, error } = pkg;
 import { Options as ChromeOptions } from 'selenium-webdriver/chrome.js';
 import { Options as FirefoxOptions } from 'selenium-webdriver/firefox.js';
 import { Options as EdgeOptions } from 'selenium-webdriver/edge.js';
+import { Options as InternetExplorerOptions, ServiceBuilder as InternetExplorerServiceBuilder } from 'selenium-webdriver/ie.js';
 import { Options as SafariOptions } from 'selenium-webdriver/safari.js';
 import { discoverBrowserDrivers } from './browser-discovery.js';
 import { displayGridUrl, resolveGridUrl } from './grid/url.js';
@@ -213,7 +214,7 @@ server.registerTool(
     {
         description: "launches browser",
         inputSchema: {
-            browser: z.enum(["chrome", "firefox", "edge", "safari"]).describe("Browser to launch (chrome, firefox, edge, or safari)"),
+            browser: z.enum(["chrome", "firefox", "edge", "edge_ie_mode", "safari"]).describe("Browser to launch (chrome, firefox, edge, edge_ie_mode, or safari)"),
             options: browserOptionsSchema,
             grid_url: z.string().optional().describe("Selenium Grid URL for remote execution; defaults to SELENIUM_GRID_URL. Omit to start a local browser."),
             browser_version: z.string().optional().describe("Requested browserVersion capability for Selenium Grid node matching"),
@@ -234,7 +235,7 @@ server.registerTool(
             }
 
             // Enable BiDi websocket if the modules are available
-            if (LogInspector && Network) {
+            if (LogInspector && Network && browser !== 'edge_ie_mode') {
                 // 'ignore' prevents BiDi from auto-dismissing alert/confirm/prompt dialogs,
                 // allowing the alert tool's accept, dismiss, and get_text actions to work as expected.
                 builder = builder.withCapabilities({ 'webSocketUrl': true, 'unhandledPromptBehavior': 'ignore' });
@@ -280,6 +281,42 @@ server.registerTool(
                         .forBrowser('edge')
                         .setEdgeOptions(edgeOptions)
                         .build();
+                    break;
+                }
+                case 'edge_ie_mode': {
+                    if (!remoteGridUrl && process.platform !== 'win32') {
+                        throw new Error('Edge IE mode can only run locally on Windows.');
+                    }
+
+                    const ieOptions = applyRequestedCapabilities(new InternetExplorerOptions());
+                    ieOptions.setEdgeChromium(true);
+
+                    if (!remoteGridUrl) {
+                        const edgeIeMode = discoverBrowserDrivers().find((item) => item.browser === 'edge_ie_mode');
+                        const edgePath = edgeIeMode?.browserPaths[0];
+                        const ieDriverPath = edgeIeMode?.driverPaths[0];
+                        if (!edgePath) {
+                            throw new Error('Microsoft Edge was not found in the standard install locations or PATH.');
+                        }
+                        if (!ieDriverPath) {
+                            throw new Error('IEDriverServer.exe was not found. Install IEDriver 4.0.0.0 or newer and add it to PATH.');
+                        }
+                        ieOptions.setEdgePath(edgePath);
+                        builder = builder.setIeService(new InternetExplorerServiceBuilder(ieDriverPath));
+                    }
+
+                    if (options.headless) {
+                        warnings.push('Edge IE mode does not support headless mode — launching with a visible window.');
+                    }
+                    if (options.arguments?.length) {
+                        warnings.push('Edge IE mode does not support custom browser arguments — ignoring.');
+                    }
+
+                    driver = await builder
+                        .forBrowser('ie')
+                        .setIeOptions(ieOptions)
+                        .build();
+                    warnings.push('WebDriver BiDi diagnostics are unavailable in Edge IE mode.');
                     break;
                 }
                 case 'firefox': {
@@ -342,7 +379,7 @@ server.registerTool(
             state.currentSession = sessionId;
 
             // Attempt to enable BiDi for real-time log capture
-            if (LogInspector && Network) {
+            if (LogInspector && Network && browser !== 'edge_ie_mode') {
                 try {
                     await setupBidi(driver, sessionId);
                 } catch (_) {
